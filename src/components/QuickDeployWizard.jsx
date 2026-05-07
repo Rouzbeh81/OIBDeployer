@@ -1,10 +1,69 @@
 import React, { useState } from 'react';
-import { Shield, Settings, FileText, RefreshCw, ArrowRight, ArrowLeft, CheckCircle, Monitor, Laptop, Smartphone, Tablet } from 'lucide-react';
+import { Shield, Settings, FileText, RefreshCw, ArrowRight, ArrowLeft, CheckCircle, Monitor, Laptop, Smartphone, Tablet, Loader } from 'lucide-react';
 
-const QuickDeployWizard = ({ onPolicyTypesSelected, onBack, selectedVersion }) => {
+// Display metadata for all known manifest policyType values.
+// Add new entries here whenever new types are introduced in PolicyManifest.json.
+const POLICY_TYPE_META = {
+  CompliancePolicies: {
+    name: 'Compliance Policies',
+    description: 'Device compliance requirements and health checks',
+    icon: Shield,
+    color: 'blue'
+  },
+  EndpointSecurity: {
+    name: 'Endpoint Security',
+    description: 'Security configurations managed from the Endpoint Security blade (Antivirus, Firewall, Disk Encryption etc.)',
+    icon: Shield,
+    color: 'red'
+  },
+  SettingsCatalog: {
+    name: 'Settings Catalog',
+    description: 'Device management and user experience settings',
+    icon: Settings,
+    color: 'green'
+  },
+  UpdatePolicies: {
+    name: 'Update Policies',
+    description: 'Windows Update for Business configuration. (Do not deploy if using Autopatch)',
+    icon: RefreshCw,
+    color: 'orange'
+  },
+  DriverUpdateProfiles: {
+    name: 'Driver Update Policies',
+    description: 'Windows Update for Business driver update configuration. (Do not deploy if using Autopatch)',
+    icon: RefreshCw,
+    color: 'yellow'
+  },
+  DeviceConfiguration: {
+    name: 'Device Configuration',
+    description: 'Legacy device configuration profiles',
+    icon: Settings,
+    color: 'gray'
+  },
+  AdminTemplates: {
+    name: 'Administrative Templates',
+    description: 'Group Policy-style administrative template configurations',
+    icon: FileText,
+    color: 'purple'
+  },
+  AppProtectionPolicies: {
+    name: 'App Protection Policies',
+    description: 'Application data protection and access control for managed apps',
+    icon: Shield,
+    color: 'teal'
+  },
+};
+
+// Hardcoded fallback used when no manifest is available (pre-3.8 branches)
+const FALLBACK_POLICY_TYPES = ['CompliancePolicies', 'EndpointSecurity', 'SettingsCatalog', 'UpdatePolicies'];
+
+const QuickDeployWizard = ({ onPolicyTypesSelected, onBack, selectedVersion, fetchPolicyTypes }) => {
   const [selectedPolicyTypes, setSelectedPolicyTypes] = useState([]);
   const [selectedOS, setSelectedOS] = useState([]);
   const [currentStep, setCurrentStep] = useState('os-selection');
+  // null = not yet fetched; string[] = resolved from manifest (or fallback)
+  const [availablePolicyTypes, setAvailablePolicyTypes] = useState(null);
+  const [isLoadingTypes, setIsLoadingTypes] = useState(false);
 
   const osOptions = [
     {
@@ -52,36 +111,22 @@ const QuickDeployWizard = ({ onPolicyTypesSelected, onBack, selectedVersion }) =
     }
   ];
 
-  const policyTypes = [
-    {
-      id: 'compliance',
-      name: 'Compliance Policies',
-      description: 'Device compliance requirements and health checks',
-      icon: Shield,
-      color: 'blue'
-    },
-    {
-      id: 'endpoint-security',
-      name: 'Endpoint Security',
-      description: 'Security configurations and threat protection',
-      icon: Shield,
-      color: 'red'
-    },
-    {
-      id: 'settings-catalog',
-      name: 'Settings Catalog',
-      description: 'Device management and user experience settings',
-      icon: Settings,
-      color: 'green'
-    },
-    {
-      id: 'update-policies',
-      name: 'Update Policies',
-      description: 'Windows Update for Business configuration. (Do not deploy if using Autopatch)',
-      icon: RefreshCw,
-      color: 'orange'
-    }
-  ];
+  // Resolve the list of policy type cards from fetched manifest types (or fallback).
+  // Each card is { id, name, description, icon, color }.
+  const getPolicyTypeCards = () => {
+    const types = availablePolicyTypes && availablePolicyTypes.length > 0
+      ? availablePolicyTypes
+      : FALLBACK_POLICY_TYPES;
+    return types.map(typeId => ({
+      id: typeId,
+      ...(POLICY_TYPE_META[typeId] ?? {
+        name: typeId,
+        description: '',
+        icon: Settings,
+        color: 'gray'
+      })
+    }));
+  };
 
   const toggleOS = (osId, enabled) => {
     if (!enabled) return; // Don't allow selection of disabled options
@@ -102,13 +147,26 @@ const QuickDeployWizard = ({ onPolicyTypesSelected, onBack, selectedVersion }) =
   };
 
   const selectAllPolicyTypes = () => {
-    const allTypes = policyTypes.map(type => type.id);
-    setSelectedPolicyTypes(selectedPolicyTypes.length === policyTypes.length ? [] : allTypes);
+    const cards = getPolicyTypeCards();
+    const allIds = cards.map(c => c.id);
+    setSelectedPolicyTypes(selectedPolicyTypes.length === allIds.length ? [] : allIds);
   };
 
-  const handleOSContinue = () => {
-    if (selectedOS.length > 0) {
-      setCurrentStep('policy-types');
+  const handleOSContinue = async () => {
+    if (selectedOS.length === 0) return;
+    setCurrentStep('policy-types');
+    setIsLoadingTypes(true);
+    try {
+      if (fetchPolicyTypes) {
+        const types = await fetchPolicyTypes(selectedOS);
+        setAvailablePolicyTypes(types.length > 0 ? types : FALLBACK_POLICY_TYPES);
+      } else {
+        setAvailablePolicyTypes(FALLBACK_POLICY_TYPES);
+      }
+    } catch {
+      setAvailablePolicyTypes(FALLBACK_POLICY_TYPES);
+    } finally {
+      setIsLoadingTypes(false);
     }
   };
 
@@ -190,42 +248,51 @@ const QuickDeployWizard = ({ onPolicyTypesSelected, onBack, selectedVersion }) =
       {currentStep === 'policy-types' && (
         <div className="policy-types-selection">
           <div className="selection-header">
-            <h3>Choose Policy Types </h3>
-            <button 
-              className="btn-link select-all"
-              onClick={selectAllPolicyTypes}
-            >
-              {selectedPolicyTypes.length === policyTypes.length ? 'Deselect All' : 'Select All'}
-            </button>
+            <h3>Choose Policy Types</h3>
+            {!isLoadingTypes && (
+              <button
+                className="btn-link select-all"
+                onClick={selectAllPolicyTypes}
+              >
+                {selectedPolicyTypes.length === getPolicyTypeCards().length ? 'Deselect All' : 'Select All'}
+              </button>
+            )}
           </div>
 
-          <div className="policy-types-grid">
-            {policyTypes.map(type => {
-              const IconComponent = type.icon;
-              const isSelected = selectedPolicyTypes.includes(type.id);
-              
-              return (
-                <div 
-                  key={type.id}
-                  className={`policy-type-card ${isSelected ? 'selected' : ''} ${type.color}`}
-                  onClick={() => togglePolicyType(type.id)}
-                >
-                  <div className="card-header">
-                    <div className="card-icon">
-                      <IconComponent size={32} />
+          {isLoadingTypes ? (
+            <div className="loading-policy-types">
+              <Loader size={28} className="spinning" />
+              <p>Loading available policy types…</p>
+            </div>
+          ) : (
+            <div className="policy-types-grid">
+              {getPolicyTypeCards().map(type => {
+                const IconComponent = type.icon;
+                const isSelected = selectedPolicyTypes.includes(type.id);
+
+                return (
+                  <div
+                    key={type.id}
+                    className={`policy-type-card ${isSelected ? 'selected' : ''} ${type.color}`}
+                    onClick={() => togglePolicyType(type.id)}
+                  >
+                    <div className="card-header">
+                      <div className="card-icon">
+                        <IconComponent size={32} />
+                      </div>
+                      <div className="card-check">
+                        {isSelected && <CheckCircle size={20} />}
+                      </div>
                     </div>
-                    <div className="card-check">
-                      {isSelected && <CheckCircle size={20} />}
+                    <div className="card-content">
+                      <h4>{type.name}</h4>
+                      <p>{type.description}</p>
                     </div>
                   </div>
-                  <div className="card-content">
-                    <h4>{type.name}</h4>
-                    <p>{type.description}</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -247,10 +314,10 @@ const QuickDeployWizard = ({ onPolicyTypesSelected, onBack, selectedVersion }) =
         )}
 
         {currentStep === 'policy-types' && (
-          <button 
+          <button
             className="btn-primary"
             onClick={handlePolicyTypesContinue}
-            disabled={selectedPolicyTypes.length === 0}
+            disabled={selectedPolicyTypes.length === 0 || isLoadingTypes}
           >
             Continue
             <ArrowRight size={16} />

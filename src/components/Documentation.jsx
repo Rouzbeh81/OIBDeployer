@@ -104,11 +104,12 @@ const Documentation = ({ onBack }) => {
             <div className="warning-box">
               <AlertTriangle size={16} />
               <p>
-                <strong>Use with caution:</strong> Always test policies in a development or test tenant first. 
-                These are baseline security policies that may impact user experience and device functionality.
-              </p>
-              <p>
-                The OIB was not designed to be assigned to devices previously managed in other ways (e.g. GPO, or using other baseline configurations)
+                <strong>Use with caution:</strong> 
+              <ul>
+                <li>Always test policies in a development or test tenant first.</li>
+                <li>These are baseline security policies that may impact user experience and device functionality.</li>
+                <li>The OIB was not designed to be assigned to devices previously managed in other ways (e.g. GPO, or using other baseline configurations)</li>
+              </ul>
               </p>
             </div>
           </div>
@@ -260,8 +261,8 @@ const Documentation = ({ onBack }) => {
           <div className="info-box">
             <Info size={16} />
             <div>
-              <p><strong>OIB Deployer Version:</strong> 1.0.0</p>
-              <p><strong>Last Updated:</strong> August 2025</p>
+              <p><strong>OIB Deployer Version:</strong> 1.1.0</p>
+              <p><strong>Last Updated:</strong> May 2026</p>
               <p><strong>Compatible with:</strong> OpenIntuneBaseline v3.0+</p>
             </div>
           </div>

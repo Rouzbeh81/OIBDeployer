@@ -136,7 +136,10 @@ class GraphAPI {
             
             // Handle rate limiting (429) and server errors (5xx)
             if ((response.status === 429 || response.status >= 500) && attempt <= this.retryAttempts) {
-                const delay = this.retryDelay * Math.pow(2, attempt - 1); // Exponential backoff
+                const retryAfterHeader = response.headers.get('Retry-After');
+                const delay = retryAfterHeader
+                    ? parseInt(retryAfterHeader, 10) * 1000
+                    : this.retryDelay * Math.pow(2, attempt - 1);
                 console.log(`Request failed with status ${response.status}, retrying in ${delay}ms (attempt ${attempt}/${this.retryAttempts})`);
                 
                 await this.sleep(delay);
@@ -160,6 +163,225 @@ class GraphAPI {
     // Sleep utility for retry delays
     sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // Extract OIBID from a tenant policy's description field.
+    // Format: "OIBID:{GUID}" appended at the end of the description (introduced in OIB v3.8).
+    // Returns the GUID string (uppercased) or null if not present.
+    extractOibId(policy) {
+        const description = policy?.description ?? null;
+        if (!description) return null;
+        const match = description.match(/OIBID:([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})/i);
+        return match ? match[1].toUpperCase() : null;
+    }
+
+    // Endpoint groups per OS type.
+    // Each group is { id, endpoints[], normalise(policy) } where endpoints is a list
+    // of relative Graph paths to fetch. Multiple endpoints in one group (e.g. Update
+    // policies) are merged into a single result array.
+    static getEndpointGroupsForOS(osTypes) {
+        const windows = osTypes.includes('WINDOWS');
+        const macos   = osTypes.includes('MACOS');
+        const byod    = osTypes.includes('BYOD');
+
+        const groups = [];
+
+        // $select ensures 'description' is always returned (needed for OIBID extraction)
+        const sel    = '$select=id,displayName,description';
+        const selName = '$select=id,name,description'; // configurationPolicies uses 'name' not 'displayName'
+
+        // Settings Catalog – all platforms (uses 'name' field, not 'displayName')
+        groups.push({
+            id: 'configurationPolicy',
+            endpoints: [`/deviceManagement/configurationPolicies?${selName}&$top=100`],
+            normalise: p => ({ id: p.id, displayName: p.name, oibId: null, type: 'configurationPolicy', policy: p })
+        });
+
+        // Compliance policies – all platforms
+        groups.push({
+            id: 'compliance',
+            endpoints: [`/deviceManagement/deviceCompliancePolicies?${sel}`],
+            normalise: p => ({ id: p.id, displayName: p.displayName, oibId: null, type: 'compliance', policy: p })
+        });
+
+        if (windows || macos) {
+            // Device Configuration profiles
+            groups.push({
+                id: 'deviceConfiguration',
+                endpoints: [`/deviceManagement/deviceConfigurations?${sel}`],
+                normalise: p => ({ id: p.id, displayName: p.displayName, oibId: null, type: 'deviceConfiguration', policy: p })
+            });
+
+            // Admin templates (ADMX / Group Policy)
+            groups.push({
+                id: 'adminTemplate',
+                endpoints: [`/deviceManagement/groupPolicyConfigurations?${sel}`],
+                normalise: p => ({ id: p.id, displayName: p.displayName, oibId: null, type: 'adminTemplate', policy: p })
+            });
+        }
+
+        if (windows) {
+            // Endpoint Security (legacy intents)
+            groups.push({
+                id: 'endpointSecurity',
+                endpoints: [`/deviceManagement/intents?${sel}`],
+                normalise: p => ({ id: p.id, displayName: p.displayName, oibId: null, type: 'endpointSecurity', policy: p })
+            });
+
+            // Windows Update for Business (three endpoints merged into one group)
+            groups.push({
+                id: 'updatePolicy',
+                endpoints: [
+                    `/deviceManagement/windowsFeatureUpdateProfiles?${sel}`,
+                    `/deviceManagement/windowsQualityUpdateProfiles?${sel}`,
+                    `/deviceManagement/windowsDriverUpdateProfiles?${sel}`
+                ],
+                normalise: p => ({ id: p.id, displayName: p.displayName, oibId: null, type: 'updatePolicy', policy: p })
+            });
+        }
+
+        if (byod || macos) {
+            // App Protection Policies
+            groups.push({
+                id: 'appProtection',
+                endpoints: [
+                    `/deviceAppManagement/iosManagedAppProtections?${sel}`,
+                    `/deviceAppManagement/androidManagedAppProtections?${sel}`
+                ],
+                normalise: p => ({ id: p.id, displayName: p.displayName, oibId: null, type: 'appProtection', policy: p })
+            });
+        }
+
+        return groups;
+    }
+
+    // Fetch existing tenant policies scoped to the selected OS types using Graph $batch.
+    // Batch limit is 20 requests per call; each endpoint is one batch item.
+    // If a response page has @odata.nextLink, subsequent pages are fetched individually.
+    async getPoliciesForOSTypes(osTypes) {
+        const groups = GraphAPI.getEndpointGroupsForOS(osTypes);
+
+        // Flatten to individual endpoint requests
+        const requests = groups.flatMap(group =>
+            group.endpoints.map((endpoint, i) => ({
+                batchId: `${group.id}__${i}`,
+                groupId: group.id,
+                endpoint
+            }))
+        );
+
+        console.log(`Fetching tenant policies for [${osTypes.join(', ')}] via Graph batch (${requests.length} endpoints)`);
+
+        // Issue requests in batches of 20 (Graph hard limit).
+        // If any batch items return 429, collect them and retry after the Retry-After delay.
+        const BATCH_LIMIT = 20;
+        const MAX_THROTTLE_RETRIES = 3;
+        const rawResults = new Map(); // batchId -> array of policy objects
+
+        let pendingRequests = [...requests];
+
+        for (let throttleAttempt = 0; throttleAttempt < MAX_THROTTLE_RETRIES && pendingRequests.length > 0; throttleAttempt++) {
+            const throttledRequests = [];
+            let retryAfterMs = 0;
+
+            for (let offset = 0; offset < pendingRequests.length; offset += BATCH_LIMIT) {
+                const slice = pendingRequests.slice(offset, offset + BATCH_LIMIT);
+
+                const batchBody = {
+                    requests: slice.map(req => ({
+                        id: req.batchId,
+                        method: 'GET',
+                        url: req.endpoint
+                    }))
+                };
+
+                const batchUrl = `${this.config.baseUrl}${this.config.endpoints.batch}`;
+                const headers = await this.getAuthHeaders();
+
+                const response = await this.makeRequestWithRetry(batchUrl, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(batchBody)
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Graph batch request failed: ${response.status} - ${errorText}`);
+                }
+
+                const batchResponse = await response.json();
+
+                for (const res of batchResponse.responses) {
+                    if (res.status === 429) {
+                        // Batch item throttled — queue for retry respecting Retry-After
+                        const ra = res.headers?.['Retry-After'] ?? res.headers?.['retry-after'];
+                        retryAfterMs = Math.max(retryAfterMs, ra ? parseInt(ra, 10) * 1000 : 10000);
+                        const original = slice.find(r => r.batchId === res.id);
+                        if (original) throttledRequests.push(original);
+                        continue;
+                    }
+
+                    if (res.status !== 200) {
+                        console.warn(`Batch item ${res.id} returned status ${res.status} — skipping`);
+                        rawResults.set(res.id, []);
+                        continue;
+                    }
+
+                    const items = res.body?.value || [];
+                    rawResults.set(res.id, items);
+
+                    // Follow nextLinks outside the batch
+                    let nextLink = res.body?.['@odata.nextLink'] || null;
+                    while (nextLink) {
+                        const pageHeaders = await this.getAuthHeaders();
+                        const pageResp = await this.makeRequestWithRetry(nextLink, { method: 'GET', headers: pageHeaders });
+                        if (!pageResp.ok) break;
+                        const pageData = await pageResp.json();
+                        rawResults.get(res.id).push(...(pageData.value || []));
+                        nextLink = pageData['@odata.nextLink'] || null;
+                    }
+
+                    console.log(`Batch item ${res.id}: ${rawResults.get(res.id).length} policies`);
+                }
+            }
+
+            if (throttledRequests.length > 0) {
+                const waitMs = retryAfterMs || 10000;
+                console.warn(`${throttledRequests.length} batch item(s) throttled (429). Waiting ${waitMs}ms before retry (attempt ${throttleAttempt + 1}/${MAX_THROTTLE_RETRIES})...`);
+                await this.sleep(waitMs);
+                pendingRequests = throttledRequests;
+            } else {
+                pendingRequests = [];
+            }
+        }
+
+        if (pendingRequests.length > 0) {
+            console.warn(`${pendingRequests.length} batch item(s) still throttled after ${MAX_THROTTLE_RETRIES} retries — results may be incomplete`);
+            for (const req of pendingRequests) {
+                if (!rawResults.has(req.batchId)) rawResults.set(req.batchId, []);
+            }
+        }
+
+        // Assemble normalised policy list, grouped by groupId, then merge per group
+        const groupMap = new Map(groups.map(g => [g.id, { normalise: g.normalise, items: [] }]));
+
+        for (const req of requests) {
+            const items = rawResults.get(req.batchId) || [];
+            groupMap.get(req.groupId).items.push(...items);
+        }
+
+        const allPolicies = [];
+        for (const [, group] of groupMap) {
+            for (const policy of group.items) {
+                const normalised = group.normalise(policy);
+                normalised.oibId = this.extractOibId(policy);
+                allPolicies.push(normalised);
+            }
+        }
+
+        console.log(`Retrieved ${allPolicies.length} tenant policies via batch for OS: [${osTypes.join(', ')}]`);
+        this.cachedPolicies = allPolicies;
+        return allPolicies;
     }
 
     // Get all policies from tenant for comparison
@@ -222,6 +444,7 @@ class GraphAPI {
                 allPolicies.push({
                     id: policy.id,
                     displayName: policy.displayName,
+                    oibId: this.extractOibId(policy),
                     type: 'compliance',
                     policy: policy
                 });
@@ -232,6 +455,7 @@ class GraphAPI {
                 allPolicies.push({
                     id: policy.id,
                     displayName: policy.displayName,
+                    oibId: this.extractOibId(policy),
                     type: 'deviceConfiguration',
                     policy: policy
                 });
@@ -242,6 +466,7 @@ class GraphAPI {
                 allPolicies.push({
                     id: policy.id,
                     displayName: policy.name, // Settings Catalog uses 'name' instead of 'displayName'
+                    oibId: this.extractOibId(policy),
                     type: 'configurationPolicy',
                     policy: policy
                 });
@@ -252,6 +477,7 @@ class GraphAPI {
                 allPolicies.push({
                     id: policy.id,
                     displayName: policy.displayName,
+                    oibId: this.extractOibId(policy),
                     type: 'endpointSecurity',
                     policy: policy
                 });
@@ -262,6 +488,7 @@ class GraphAPI {
                 allPolicies.push({
                     id: policy.id,
                     displayName: policy.displayName,
+                    oibId: this.extractOibId(policy),
                     type: 'adminTemplate',
                     policy: policy
                 });
@@ -272,6 +499,7 @@ class GraphAPI {
                 allPolicies.push({
                     id: policy.id,
                     displayName: policy.displayName,
+                    oibId: this.extractOibId(policy),
                     type: 'updatePolicy',
                     policy: policy
                 });
@@ -501,6 +729,7 @@ class GraphAPI {
             case 'CompliancePolicies':
                 return this.transformCompliancePolicyForImport(transformedPolicy, currentTenantId);
             
+            case 'DeviceConfiguration':
             case 'DeviceConfigurations':
                 return this.transformDeviceConfigurationForImport(transformedPolicy, currentTenantId);
             
@@ -769,6 +998,7 @@ class GraphAPI {
                 case 'ConfigurationPolicies':
                     endpoint = this.config.endpoints.configurationPolicies;
                     break;
+                case 'DeviceConfiguration':
                 case 'DeviceConfigurations':
                     endpoint = this.config.endpoints.deviceConfigurations;
                     break;

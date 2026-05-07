@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Settings, CheckCircle, AlertCircle, Loader, BookOpen, ArrowLeft } from 'lucide-react';
+import { AlertCircle, Loader, BookOpen, ArrowLeft, Moon, Sun } from 'lucide-react';
 import Homepage from './components/Homepage';
 import AuthComponent from './components/AuthComponent';
 import PolicySelector from './components/PolicySelector';
@@ -40,6 +40,17 @@ function App() {
     total: 0,
     currentStep: 'preparing'
   });
+
+  // Dark mode
+  const [darkMode, setDarkMode] = useState(() => {
+    const stored = localStorage.getItem('oib-dark-mode');
+    return stored ? stored === 'true' : false;
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+    localStorage.setItem('oib-dark-mode', darkMode);
+  }, [darkMode]);
 
   // New wizard state variables
   const [deploymentType, setDeploymentType] = useState(null); // 'new' or 'existing'
@@ -88,9 +99,6 @@ function App() {
         setWizardStep('deployment-type');
         
         console.log('Already connected to tenant:', tenantId);
-        
-        await loadExistingPolicies();
-        await loadLatestVersionAndPolicies();
       }
     } catch (error) {
       console.error('Failed to initialize app:', error);
@@ -140,91 +148,6 @@ function App() {
     }
   };
 
-  const loadExistingPolicies = async () => {
-    try {
-      setIsLoading(true);
-      console.log('Loading existing policies from tenant...');
-      
-      const policies = await graphAPI.getAllPolicies();
-      setExistingPolicies(policies);
-      
-      console.log(`Loaded ${policies.length} existing policies from tenant`);
-    } catch (error) {
-      console.error('Failed to load existing policies:', error);
-      setError('Failed to load existing policies from tenant');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const loadLatestVersionAndPolicies = async () => {
-    try {
-      console.log('Loading latest OIB version and policies...');
-      
-      // Check session storage first
-      const sessionKey = 'oib-latest-data';
-      const cachedData = sessionStorage.getItem(sessionKey);
-      
-      if (cachedData) {
-        try {
-          const { version, policies, timestamp } = JSON.parse(cachedData);
-          const cacheAge = Date.now() - timestamp;
-          const maxAge = 30 * 60 * 1000; // 30 minutes
-          
-          if (cacheAge < maxAge) {
-            console.log(`Using cached data (age: ${Math.round(cacheAge / 1000)}s)`);
-            setLatestVersion(version);
-            setAvailablePolicies(policies);
-            return;
-          } else {
-            console.log('Cached data expired, fetching fresh data');
-            sessionStorage.removeItem(sessionKey);
-          }
-        } catch (error) {
-          console.warn('Failed to parse cached data, fetching fresh:', error);
-          sessionStorage.removeItem(sessionKey);
-        }
-      }
-      
-      // Fetch fresh data
-      console.log('Fetching fresh data from GitHub API...');
-      
-      // Use main branch instead of releases for latest code
-      const latest = 'main';
-      setLatestVersion('Latest (main branch)');
-      
-      // Load policies for all OS types from main branch
-      const policies = {};
-      const osTypes = ['WINDOWS', 'MACOS'];
-      
-      for (const os of osTypes) {
-        try {
-          const osPolicies = await githubAPI.getPoliciesForOS(os, latest);
-          if (osPolicies && Object.keys(osPolicies).length > 0) {
-            policies[os] = osPolicies;
-          }
-        } catch (error) {
-          console.warn(`Failed to load ${os} policies from main branch:`, error);
-        }
-      }
-      
-      setAvailablePolicies(policies);
-      
-      // Cache the data in session storage
-      const dataToCache = {
-        version: 'Latest (main branch)',
-        policies: policies,
-        timestamp: Date.now()
-      };
-      sessionStorage.setItem(sessionKey, JSON.stringify(dataToCache));
-      
-      console.log(`Loaded and cached policies from main branch:`, Object.keys(policies));
-    } catch (error) {
-      console.error('Failed to load latest version and policies:', error);
-      setError('Failed to load latest version information');
-    }
-  };
-
   // Wizard handler functions
   const handleDeploymentTypeSelection = (type) => {
     setDeploymentType(type);
@@ -243,38 +166,88 @@ function App() {
   };
 
   const loadPoliciesForSelectedOS = async (osTypes) => {
+    const branchOverride = import.meta.env.VITE_BRANCH_OVERRIDE;
+    const latest = branchOverride || 'main';
+    const versionLabel = branchOverride
+      ? `Branch override: ${branchOverride}`
+      : 'Latest (main branch)';
+    const sessionKey = `oib-latest-data-${latest}`;
+
     try {
-      console.log(`Loading policies for selected OS types: ${osTypes.join(', ')}`);
-      
-      // Filter existing available policies or load fresh data for selected OS
-      const filteredPolicies = {};
-      
-      if (availablePolicies && Object.keys(availablePolicies).length > 0) {
-        // Use cached data, filter by selected OS
-        osTypes.forEach(os => {
-          if (availablePolicies[os]) {
-            filteredPolicies[os] = availablePolicies[os];
+      setIsLoading(true);
+      setAvailablePolicies({}); // Clear so comparison dashboard shows loading state
+      setLatestVersion(versionLabel);
+
+      console.log(`Fetching policies for [${osTypes.join(', ')}] from branch: ${latest}`);
+
+      // Check session cache for already-fetched OS data
+      let cachedPolicies = null;
+      const cachedData = sessionStorage.getItem(sessionKey);
+      if (cachedData) {
+        try {
+          const { policies, timestamp } = JSON.parse(cachedData);
+          const cacheAge = Date.now() - timestamp;
+          if (cacheAge < 30 * 60 * 1000) {
+            cachedPolicies = policies;
+          } else {
+            sessionStorage.removeItem(sessionKey);
           }
-        });
-      } else {
-        // Load fresh data for selected OS only
-        for (const os of osTypes) {
-          try {
-            const osPolicies = await githubAPI.getPoliciesForOS(os, 'main');
-            if (osPolicies && Object.keys(osPolicies).length > 0) {
-              filteredPolicies[os] = osPolicies;
-            }
-          } catch (error) {
-            console.warn(`Failed to load ${os} policies:`, error);
-          }
+        } catch {
+          sessionStorage.removeItem(sessionKey);
         }
       }
-      
-      setAvailablePolicies(filteredPolicies);
-      console.log(`Loaded policies for selected OS types:`, Object.keys(filteredPolicies));
+
+      // Fetch GitHub policies and Graph tenant policies in parallel
+      const osTypesToFetch = osTypes.filter(os => !cachedPolicies?.[os]);
+      const cachedOsTypes  = osTypes.filter(os =>  cachedPolicies?.[os]);
+
+      const [githubResults, tenantPolicies] = await Promise.allSettled([
+        // GitHub: only fetch OS types not already in cache
+        (async () => {
+          const fetched = {};
+          for (const os of osTypesToFetch) {
+            try {
+              const osPolicies = await githubAPI.getPoliciesForOS(os, latest);
+              if (osPolicies && Object.keys(osPolicies).length > 0) {
+                fetched[os] = osPolicies;
+              }
+            } catch (error) {
+              console.warn(`Failed to load ${os} policies from branch ${latest}:`, error);
+            }
+          }
+          return fetched;
+        })(),
+        // Graph: always re-fetch scoped to selected OS types (no stale cache risk)
+        graphAPI.getPoliciesForOSTypes(osTypes)
+      ]);
+
+      const fetchedPolicies = {
+        ...(cachedOsTypes.reduce((acc, os) => ({ ...acc, [os]: cachedPolicies[os] }), {})),
+        ...(githubResults.status === 'fulfilled' ? githubResults.value : {})
+      };
+
+      if (tenantPolicies.status === 'fulfilled') {
+        setExistingPolicies(tenantPolicies.value);
+      } else {
+        console.warn('Failed to fetch tenant policies:', tenantPolicies.reason);
+      }
+
+      setAvailablePolicies(fetchedPolicies);
+
+      // Merge into session cache so subsequent OS selections skip GitHub re-fetching
+      const mergedPolicies = { ...(cachedPolicies || {}), ...fetchedPolicies };
+      sessionStorage.setItem(sessionKey, JSON.stringify({
+        version: versionLabel,
+        policies: mergedPolicies,
+        timestamp: Date.now()
+      }));
+
+      console.log(`Policies loaded for: ${Object.keys(fetchedPolicies).join(', ')}`);
     } catch (error) {
       console.error('Failed to load policies for selected OS:', error);
       setError('Failed to load policies for selected operating systems');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -327,7 +300,7 @@ function App() {
     setSelectedPolicies(policies);
   };
 
-  const handleDeployment = async (policiesToDeploy = null) => {
+  const handleDeployment = async (policiesToDeploy) => {
     console.warn('handleDeployment called with:', policiesToDeploy);
     const policies = policiesToDeploy || selectedPolicies;
     
@@ -468,7 +441,7 @@ function App() {
       });
 
       // Update existing policies list to reflect new deployments
-      await loadExistingPolicies();
+      await refreshTenantPolicies();
 
       const successCount = results.filter(r => r.success).length;
       const failureCount = results.filter(r => !r.success).length;
@@ -512,13 +485,58 @@ function App() {
   };
 
   const handleRefreshPolicies = async () => {
-    await loadExistingPolicies();
+    if (selectedOSTypes.length > 0) {
+      await loadPoliciesForSelectedOS(selectedOSTypes);
+    }
+  };
+
+  // Refresh only tenant (Graph) policies — GitHub data stays in session cache.
+  // Used by the Comparison Dashboard "Refresh Data" button.
+  const refreshTenantPolicies = async () => {
+    if (!selectedOSTypes.length) return;
+    try {
+      setIsLoading(true);
+      const policies = await graphAPI.getPoliciesForOSTypes(selectedOSTypes);
+      setExistingPolicies(policies);
+    } catch (error) {
+      console.error('Failed to refresh tenant policies:', error);
+      setError('Failed to refresh tenant policies from Graph');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Fetch the unique policyType values from the manifest(s) for the given OS types.
+  // Used by QuickDeployWizard to build the dynamic policy type selection step.
+  const fetchPolicyTypesForOS = async (osTypes) => {
+    const branchOverride = import.meta.env.VITE_BRANCH_OVERRIDE;
+    const branch = branchOverride || 'main';
+
+    const typeSet = new Set();
+    await Promise.all(osTypes.map(async (osType) => {
+      try {
+        const manifestData = await githubAPI.getPolicyManifest(osType, branch);
+        if (manifestData?.manifest?.policies) {
+          manifestData.manifest.policies.forEach(p => {
+            if (p.policyType) typeSet.add(p.policyType);
+          });
+        }
+      } catch {
+        // Pre-3.8 or unavailable manifest — caller will fall back to defaults
+      }
+    }));
+
+    return [...typeSet];
   };
 
   const handleRefreshGitHubData = async () => {
-    // Clear session cache and reload
-    sessionStorage.removeItem('oib-latest-data');
-    await loadLatestVersionAndPolicies();
+    const branchOverride = import.meta.env.VITE_BRANCH_OVERRIDE;
+    const latest = branchOverride || 'main';
+    sessionStorage.removeItem(`oib-latest-data-${latest}`);
+    githubAPI.clearCache();
+    if (selectedOSTypes.length > 0) {
+      await loadPoliciesForSelectedOS(selectedOSTypes);
+    }
   };
 
   // Debug current state
@@ -551,6 +569,13 @@ function App() {
                 <BookOpen size={16} />
                 {showDocumentation ? 'Back to Home' : 'Help & FAQ'}
               </button>
+              <button
+                onClick={() => setDarkMode(d => !d)}
+                className="dark-mode-toggle"
+                title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              >
+                {darkMode ? <Sun size={16} /> : <Moon size={16} />}
+              </button>
             </div>
           )}
           
@@ -572,6 +597,13 @@ function App() {
                 <BookOpen size={16} />
                 {showDocumentation ? 'Back to Login' : 'Help & FAQ'}
               </button>
+              <button
+                onClick={() => setDarkMode(d => !d)}
+                className="dark-mode-toggle"
+                title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              >
+                {darkMode ? <Sun size={16} /> : <Moon size={16} />}
+              </button>
             </div>
           )}
           
@@ -585,6 +617,13 @@ function App() {
                 >
                   <BookOpen size={16} />
                   {showDocumentation ? 'Back to App' : 'Help & FAQ'}
+                </button>
+                <button
+                  onClick={() => setDarkMode(d => !d)}
+                  className="dark-mode-toggle"
+                  title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                >
+                  {darkMode ? <Sun size={16} /> : <Moon size={16} />}
                 </button>
               </div>
               <div className="user-details">
@@ -663,6 +702,7 @@ function App() {
             onPolicyTypesSelected={handlePolicyTypesSelection}
             onBack={handleWizardBack}
             selectedVersion={latestVersion}
+            fetchPolicyTypes={fetchPolicyTypesForOS}
           />
         )}
 
@@ -680,39 +720,24 @@ function App() {
             availablePolicies={availablePolicies}
             onSelectPolicies={handleComparisonPolicySelection}
             onBack={handleWizardBack}
-            onRefresh={handleRefreshGitHubData}
+            onRefresh={refreshTenantPolicies}
             isLoading={isLoading}
             selectedVersion={latestVersion}
           />
         )}
 
         {isAuthenticated && !showDocumentation && currentStep === 'wizard' && wizardStep === 'policy-selection' && (
-          <div className="main-content">
-            <div className="wizard-container">
-              <div className="wizard-header">
-                <h2>Select Policies to Deploy</h2>
-                <p>Choose individual policies from your selected types: {selectedPolicyTypes.join(', ')}</p>
-                <p>For OS types: {selectedOSTypes.join(', ')}</p>
-                {latestVersion && (
-                  <div className="version-info">
-                    <span className="version-badge">Version: {latestVersion}</span>
-                  </div>
-                )}
-              </div>
-              
-              <FilteredPolicySelector
-                existingPolicies={existingPolicies}
-                onPolicySelection={handlePolicySelection}
-                availablePolicies={availablePolicies}
-                selectedPolicyTypes={selectedPolicyTypes}
-                selectedOSTypes={selectedOSTypes}
-                selectedVersion={latestVersion}
-                onBack={handleWizardBack}
-                onDeploy={handleDeployment}
-                isLoading={isLoading}
-              />
-            </div>
-          </div>
+          <FilteredPolicySelector
+            existingPolicies={existingPolicies}
+            onPolicySelection={handlePolicySelection}
+            availablePolicies={availablePolicies}
+            selectedPolicyTypes={selectedPolicyTypes}
+            selectedOSTypes={selectedOSTypes}
+            selectedVersion={latestVersion}
+            onBack={handleWizardBack}
+            onDeploy={handleDeployment}
+            isLoading={isLoading}
+          />
         )}
 
         {isAuthenticated && !showDocumentation && currentStep === 'select' && (

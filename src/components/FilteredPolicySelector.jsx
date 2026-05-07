@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, CheckCircle, AlertCircle, Package, Filter, ArrowLeft, Upload } from 'lucide-react';
+import { Search, CheckCircle, HelpCircle, Package, Filter, ArrowLeft, Upload, Plus, BarChart3 } from 'lucide-react';
 
 const FilteredPolicySelector = ({ 
   existingPolicies, 
@@ -17,28 +17,31 @@ const FilteredPolicySelector = ({
   const [typeFilter, setTypeFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
 
-  // Check if a policy exists in the tenant by name matching
-  const checkIfPolicyExistsByName = (policyName, existingPolicies) => {
+  // Check if a policy from the OIB repo already exists in the tenant.
+  // Pass 1: OIBID match (v3.8+ policies with a GUID in description).
+  // Pass 2: name-based fallback for older policies or tenants that stripped the OIBID.
+  const checkIfPolicyExists = (availablePolicy, existingPolicies) => {
     if (!existingPolicies || !Array.isArray(existingPolicies)) {
       return { exists: false, status: 'new' };
     }
 
-    const baseName = policyName.replace('.json', '');
-    
-    const foundPolicy = existingPolicies.find(existing => {
-      const existingName = existing.displayName || existing.name || '';
-      return existingName.toLowerCase().includes(baseName.toLowerCase()) ||
-             baseName.toLowerCase().includes(existingName.toLowerCase());
-    });
-
-    if (foundPolicy) {
-      return { 
-        exists: true, 
-        status: 'existing',
-        matchedPolicy: foundPolicy
-      };
+    // Pass 1: OIBID
+    const availableOibId = availablePolicy.oibId?.toUpperCase();
+    if (availableOibId) {
+      const matched = existingPolicies.find(e => e.oibId?.toUpperCase() === availableOibId);
+      if (matched) return { exists: true, status: 'existing', matchedPolicy: matched };
     }
 
+    // Pass 2: name fallback
+    const baseName = (availablePolicy.name || '').replace('.json', '').toLowerCase();
+    const matched = existingPolicies.find(e => {
+      const existingName = (e.displayName || e.name || '').toLowerCase();
+      return existingName === baseName ||
+             existingName.includes(baseName) ||
+             baseName.includes(existingName);
+    });
+
+    if (matched) return { exists: true, status: 'existing', matchedPolicy: matched };
     return { exists: false, status: 'new' };
   };
 
@@ -87,8 +90,7 @@ const FilteredPolicySelector = ({
         }
         
         processed[osType][policyType] = policyList.map(policy => {
-          const matchResult = checkIfPolicyExistsByName(policy.name, existingPolicies);
-          
+          const matchResult = checkIfPolicyExists(policy, existingPolicies);
           return {
             ...policy,
             status: matchResult.status,
@@ -142,23 +144,18 @@ const FilteredPolicySelector = ({
   };
 
   const handlePolicyToggle = (policy) => {
-    console.warn('Policy toggle clicked:', policy);
     const policyKey = `${policy.osType}-${policy.policyType}-${policy.name}`;
     
-    // Update the policy in processedPolicies
     const updatedPolicies = { ...processedPolicies };
     const targetPolicy = updatedPolicies[policy.osType][policy.policyType].find(p => p.name === policy.name);
     if (targetPolicy) {
       targetPolicy.selected = !targetPolicy.selected;
-      console.warn('Policy selected state changed to:', targetPolicy.selected);
     }
 
-    // Update selected policies list
     const updatedSelected = targetPolicy?.selected 
       ? [...selectedPolicies, { ...policy, selected: true }]
       : selectedPolicies.filter(p => `${p.osType}-${p.policyType}-${p.name}` !== policyKey);
     
-    console.warn('Updated selected policies:', updatedSelected);
     setSelectedPolicies(updatedSelected);
     onPolicySelection(updatedSelected);
   };
@@ -218,20 +215,21 @@ const FilteredPolicySelector = ({
   const newPoliciesCount = filteredPolicies.filter(p => p.status === 'new').length;
   const existingPoliciesCount = filteredPolicies.filter(p => p.status === 'existing').length;
 
-  // Add debugging
-  console.warn('FilteredPolicySelector render:', {
-    selectedPolicies: selectedCount,
-    filteredPolicies: filteredPolicies.length,
-    newPoliciesCount,
-    existingPoliciesCount,
-    availablePolicies: availablePolicies ? Object.keys(availablePolicies).length : 0,
-    selectedPolicyTypes,
-    selectedOSTypes,
-    isLoading
-  });
-
   return (
-    <div className="filtered-policy-selector">
+    <div className="wizard-container comparison-dashboard">
+      <div className="comparison-content">
+
+      {/* Header */}
+      <div className="wizard-header">
+        <h2>New Policy Deployment</h2>
+        <p>Review and select policies to deploy from the latest OpenIntuneBaseline</p>
+        {selectedVersion && (
+          <div className="version-info">
+            <span className="version-badge">Deploying from: {selectedVersion}</span>
+          </div>
+        )}
+      </div>
+
       {/* Filter Section */}
       <div className="filter-row">
         <div className="filter-group">
@@ -274,23 +272,35 @@ const FilteredPolicySelector = ({
         </div>
       </div>
 
-      {/* Summary Stats */}
-      <div className="policies-summary">
-        <div className="summary-stat">
-          <span className="stat-label">Total Available:</span>
-          <span className="stat-value">{filteredPolicies.length}</span>
+      {/* Summary Stat Cards */}
+      <div className="comparison-stats">
+        <div className="stat-card">
+          <div className="stat-icon"><Package size={24} /></div>
+          <div className="stat-content">
+            <div className="stat-number">{filteredPolicies.length}</div>
+            <div className="stat-label">Total Available</div>
+          </div>
         </div>
-        <div className="summary-stat">
-          <span className="stat-label">New Policies:</span>
-          <span className="stat-value new">{newPoliciesCount}</span>
+        <div className="stat-card missing">
+          <div className="stat-icon"><Plus size={24} /></div>
+          <div className="stat-content">
+            <div className="stat-number">{newPoliciesCount}</div>
+            <div className="stat-label">New Policies</div>
+          </div>
         </div>
-        <div className="summary-stat">
-          <span className="stat-label">Existing:</span>
-          <span className="stat-value existing">{existingPoliciesCount}</span>
+        <div className="stat-card existing">
+          <div className="stat-icon"><HelpCircle size={24} /></div>
+          <div className="stat-content">
+            <div className="stat-number">{existingPoliciesCount}</div>
+            <div className="stat-label">Already in Tenant</div>
+          </div>
         </div>
-        <div className="summary-stat">
-          <span className="stat-label">Selected:</span>
-          <span className="stat-value selected">{selectedCount}</span>
+        <div className="stat-card deploy">
+          <div className="stat-icon"><BarChart3 size={24} /></div>
+          <div className="stat-content">
+            <div className="stat-number">{selectedCount}</div>
+            <div className="stat-label">Selected to Deploy</div>
+          </div>
         </div>
       </div>
 
@@ -400,31 +410,35 @@ const FilteredPolicySelector = ({
                                 onClick={() => handlePolicyToggle(policy)}
                               >
                                 <div className="policy-details">
-                                  <div className="policy-header">
-                                    <h5 className="policy-name">{policy.name}</h5>
-                                  </div>
-                                  
-                                  <div className="policy-status">
-                                    {policy.status === 'existing' ? (
-                                      <div className="status-badge status-existing">
-                                        <CheckCircle className="status-icon" />
-                                        Already Deployed
-                                        {policy.matchedPolicy && (
-                                          <div className="status-details">
-                                            Deployed: {policy.matchedPolicy.displayName}
-                                          </div>
-                                        )}
-                                      </div>
-                                    ) : (
-                                      <div className="status-badge status-new">
-                                        <AlertCircle className="status-icon" />
-                                        New Policy
-                                      </div>
-                                    )}
-                                  </div>
+                                  <h5 className="policy-name">{policy.name.replace('.json', '')}</h5>
+                                  {(policy.skuRequirements || policy.licenseRequirements) && (
+                                    <div className="policy-req-tags">
+                                      {policy.skuRequirements === 'Enterprise' && (
+                                        <span className="req-tag req-tag--enterprise" title="Requires Windows Enterprise SKU">Enterprise</span>
+                                      )}
+                                      {policy.licenseRequirements === 'MDE' && (
+                                        <span className="req-tag req-tag--mde" title="Requires Microsoft Defender for Endpoint licence">MDE</span>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
-                                
+
                                 <div className="policy-actions">
+                                  {policy.status === 'existing' ? (
+                                    <span
+                                      className="policy-status-icon policy-status-icon--existing"
+                                      title={policy.matchedPolicy ? `Already in tenant: ${policy.matchedPolicy.displayName}` : 'Already in tenant'}
+                                    >
+                                      <HelpCircle size={14} />
+                                    </span>
+                                  ) : (
+                                    <span
+                                      className="policy-status-icon policy-status-icon--new"
+                                      title="New policy — not yet in tenant"
+                                    >
+                                      <Plus size={14} />
+                                    </span>
+                                  )}
                                   <div className={`selection-checkbox ${isSelected ? 'checked' : ''}`}>
                                     {isSelected && <CheckCircle size={16} />}
                                   </div>
@@ -443,6 +457,8 @@ const FilteredPolicySelector = ({
         )}
       </div>
 
+      </div>{/* end comparison-content */}
+
       {/* Sticky Navigation */}
       <div className="comparison-navigation-sticky">
         <div className="wizard-navigation">
@@ -450,14 +466,11 @@ const FilteredPolicySelector = ({
             <ArrowLeft size={16} />
             Back
           </button>
-          
+
           {selectedPolicies.length > 0 && (
-            <button 
+            <button
               className="btn-primary"
-              onClick={() => {
-                console.warn('Deploy button clicked with policies:', selectedPolicies);
-                onDeploy(); // Call without arguments, like PolicySelector does
-              }}
+              onClick={() => onDeploy(selectedPolicies)}
               disabled={isLoading}
             >
               Deploy Selected Policies ({selectedPolicies.length})

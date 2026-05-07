@@ -1,12 +1,10 @@
 import React from 'react';
-import { Play, Shield, Zap, CheckCircle, Users, Download, ArrowRight, BookOpen, ChevronDown, ExternalLink, BookOpenCheck, UserCheck, Settings } from 'lucide-react';
+import { Shield, Zap, CheckCircle, Users, Download, ArrowRight, BookOpen, ChevronDown, ExternalLink, BookOpenCheck, UserCheck, Settings } from 'lucide-react';
 
 const Homepage = ({ onGetStarted, onViewDocumentation }) => {
-  const scrollToFeatures = () => {
-    const featuresSection = document.querySelector('.features-section');
-    if (featuresSection) {
-      featuresSection.scrollIntoView({ behavior: 'smooth' });
-    }
+  const scrollTo = (selector) => {
+    const el = document.querySelector(selector);
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
   };
 
   const keyFeatures = [
@@ -53,8 +51,9 @@ const Homepage = ({ onGetStarted, onViewDocumentation }) => {
 
   return (
     <div className="homepage">
-      {/* Hero Section */}
-      <section className="hero-section">
+
+      {/* ── Section 1: Hero ─────────────────────────────────────── */}
+      <section className="hero-section homepage-section">
         <div className="hero-content">
           <div className="hero-text">
             <h1 className="hero-title">
@@ -101,16 +100,15 @@ const Homepage = ({ onGetStarted, onViewDocumentation }) => {
             </div>
           </div>
         </div>
+
+        <button className="scroll-indicator" onClick={() => scrollTo('.features-section')} aria-label="Scroll to features">
+          <ChevronDown className="scroll-arrow" />
+          <span>Explore Features</span>
+        </button>
       </section>
 
-      {/* Scroll indicator */}
-      <div className="scroll-indicator" onClick={scrollToFeatures}>
-        <ChevronDown className="scroll-arrow" />
-        <span>Explore Features</span>
-      </div>
-
-      {/* Features Section */}
-      <section className="features-section">
+      {/* ── Section 2: Why Choose ────────────────────────────────── */}
+      <section className="features-section homepage-section">
         <div className="section-header">
           <h2>Why Choose OpenIntuneBaseline?</h2>
           <p>Built by experts, driven by community.</p>
@@ -126,16 +124,24 @@ const Homepage = ({ onGetStarted, onViewDocumentation }) => {
             </div>
           ))}
         </div>
+
+        <button className="scroll-indicator scroll-indicator--dark" onClick={() => scrollTo('.benefits-section')} aria-label="Scroll to benefits">
+          <ChevronDown className="scroll-arrow" />
+          <span>Learn More</span>
+        </button>
       </section>
 
-      {/* Benefits Section */}
-      <section className="benefits-section">
+      {/* ── Section 3: Benefits + About + CTA ───────────────────── */}
+      <section className="benefits-section homepage-section">
         <div className="benefits-content">
+
+          {/* Benefits list — centred across full width */}
           <div className="benefits-text">
             <h2>Strengthened Security Posture, Empowered User Experience</h2>
             <p className="benefits-intro">
-              OpenIntuneBaseline provides enterprise-ready security configurations that help organizations 
-              implement industry security best practices efficiently, without compromising user productivity.
+              OpenIntuneBaseline provides a comprehensive, community-supported security baseline for
+              Microsoft Intune, helping organizations implement robust endpoint security without
+              compromising end user experience or manageability.
             </p>
             <ul className="benefits-list">
               {benefits.map((benefit, index) => (
@@ -143,50 +149,62 @@ const Homepage = ({ onGetStarted, onViewDocumentation }) => {
               ))}
             </ul>
           </div>
-        </div>
-      </section>
 
-      {/* Reference Section */}
-      <section className="reference-section">
-        <div className="reference-content">
-          <div className="reference-text">
-            <h3>About OpenIntuneBaseline</h3>
-            <p>
-              OpenIntuneBaseline is an open-source project that provides enterprise-ready security 
-              configurations for Microsoft Intune. The project is maintained by security professionals 
-              and aligned with Microsoft's Security Compliance Toolkit recommendations.
+          {/* About — three pillars, full width */}
+          <div className="about-section">
+            <h3 className="about-heading">About OpenIntuneBaseline</h3>
+            <p className="about-intro">
+              OpenIntuneBaseline is an open-source project that provides a comprehensive,
+              community-maintained security baseline for Microsoft Intune. Our mission is to
+              democratize enterprise-grade endpoint security by making proven configurations
+              accessible to organizations of all sizes.
             </p>
-            <a 
-              href="https://openintunebaseline.com/" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="reference-link"
+            <div className="about-pillars">
+              <div className="about-pillar">
+                <Users className="pillar-icon" />
+                <h4>Community-First Approach</h4>
+                <p>Built and maintained by security professionals who understand real-world challenges and requirements.</p>
+              </div>
+              <div className="about-pillar">
+                <Shield className="pillar-icon" />
+                <h4>Proven in Production</h4>
+                <p>Configurations are tested and validated in real enterprise environments before being shared with the community.</p>
+              </div>
+              <div className="about-pillar">
+                <Zap className="pillar-icon" />
+                <h4>Continuously Updated</h4>
+                <p>Regular updates ensure compatibility with the latest Microsoft Intune features and emerging security threats.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Split CTA */}
+          <div className="benefits-cta-row">
+            <button
+              onClick={onGetStarted}
+              className="btn btn-primary btn-large cta-button"
             >
-              <ExternalLink className="link-icon" />
-              Learn more at openintunebaseline.com
+              <Shield className="btn-icon" />
+              Deploy OpenIntuneBaseline
+              <ArrowRight className="btn-icon-right" />
+            </button>
+            <a
+              href="https://github.com/SkipToTheEndpoint/OpenIntuneBaseline"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-outline btn-large cta-button-secondary"
+            >
+              <ExternalLink className="btn-icon" />
+              Learn More on GitHub
             </a>
           </div>
+          <p className="cta-note-standalone">
+            Requires DeviceManagementConfiguration.ReadWrite.All permissions
+          </p>
+
         </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="cta-section">
-        <div className="cta-content">
-          <h2>Ready to Enhance Your Security?</h2>
-          <p>Deploy OpenIntuneBaseline security policies to your Microsoft Intune tenant and strengthen your organization's security posture.</p>
-          <button 
-            onClick={onGetStarted}
-            className="btn btn-primary btn-large cta-button"
-          >
-            <Shield className="btn-icon" />
-            Deploy Security Baselines
-            <ArrowRight className="btn-icon-right" />
-          </button>
-          <p className="cta-note">
-            Requires Microsoft Intune license and DeviceManagementConfiguration.ReadWrite.All permissions
-          </p>
-        </div>
-      </section>
     </div>
   );
 };
