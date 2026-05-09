@@ -987,10 +987,20 @@ class GraphAPI {
         try {
             const { policy, type, fileName } = policyData;
             let endpoint = '';
-            let transformedPolicy = this.transformPolicyForImport(policy, type);
+
+            // Detect effective type: modern ES policies have been migrated to Settings Catalog
+            // format and must use the configurationPolicies endpoint, not the legacy intents endpoint.
+            let effectiveType = type;
+            if (type === 'EndpointSecurity' &&
+                policy?.['@odata.type']?.includes('deviceManagementConfigurationPolicy')) {
+                effectiveType = 'SettingsCatalog';
+                console.log(`ES policy is Settings Catalog format, routing to configurationPolicies: ${fileName}`);
+            }
+
+            let transformedPolicy = this.transformPolicyForImport(policy, effectiveType);
 
             // Determine the correct endpoint based on policy type
-            switch (type) {
+            switch (effectiveType) {
                 case 'CompliancePolicies':
                     endpoint = this.config.endpoints.deviceCompliancePolicies;
                     break;
@@ -1013,10 +1023,10 @@ class GraphAPI {
                     endpoint = this.determineUpdatePolicyEndpoint(transformedPolicy);
                     break;
                 default:
-                    throw new Error(`Unsupported policy type: ${type}`);
+                    throw new Error(`Unsupported policy type: ${effectiveType}`);
             }
 
-            console.log(`Deploying ${type} policy: ${fileName}`);
+            console.log(`Deploying ${effectiveType} policy: ${fileName}`);
             const result = await this.makeRequest(endpoint, 'POST', transformedPolicy);
             
             return {
