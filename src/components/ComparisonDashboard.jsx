@@ -17,12 +17,14 @@ const ComparisonDashboard = ({
   useEffect(() => {
     if (availablePolicies && Object.keys(availablePolicies).length > 0) {
       generateComparisonData();
+    } else {
+      setComparisonData(null);
     }
   }, [availablePolicies, existingPolicies]);
 
   const generateComparisonData = () => {
     const comparison = {
-      byOS: {}, // Organize by OS
+      byOS: {},
       totals: {
         current: 0,
         outdated: 0,
@@ -30,6 +32,28 @@ const ComparisonDashboard = ({
         missing: 0,
         total: 0
       }
+    };
+
+    // Helper functions used by the name-based fallback path
+    const extractVersion = (name) => {
+      const versionMatch = name.match(/v(\d+(?:\.\d+)*)/i);
+      return versionMatch ? versionMatch[1] : null;
+    };
+
+    const extractBaseName = (name) => {
+      return name.replace(/\s*-\s*v\d+(?:\.\d+)*\s*$/i, '').trim();
+    };
+
+    const compareVersions = (v1, v2) => {
+      const parts1 = v1.split('.').map(Number);
+      const parts2 = v2.split('.').map(Number);
+      for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+        const part1 = parts1[i] || 0;
+        const part2 = parts2[i] || 0;
+        if (part1 > part2) return 1;
+        if (part1 < part2) return -1;
+      }
+      return 0;
     };
 
     // Process each OS separately
@@ -54,25 +78,47 @@ const ComparisonDashboard = ({
         osPolicies.push(...policies.map(p => ({ ...p, osType })));
       });
 
-      // Compare each available policy with existing ones
       osPolicies.forEach(availablePolicy => {
         const policyName = availablePolicy.name.replace('.json', '');
-        
-        // Extract version from policy name
-        const extractVersion = (name) => {
-          const versionMatch = name.match(/v(\d+(?:\.\d+)*)/i);
-          return versionMatch ? versionMatch[1] : null;
-        };
+        const availableOibId = availablePolicy.oibId?.toUpperCase();
+        const previousVersionIds = (availablePolicy.previousVersions || []).map(id => id.toUpperCase());
 
-        // Extract base name without version
-        const extractBaseName = (name) => {
-          return name.replace(/\s*-\s*v\d+(?:\.\d+)*\s*$/i, '').trim();
-        };
+        // --- Pass 1: OIBID matching (v3.8+ branches with PolicyManifest) ---
+        if (availableOibId) {
+          // Current version already deployed?
+          const matchedByCurrent = existingPolicies.find(p => p.oibId === availableOibId);
+          // Or a previous version deployed (tenant is out of date)?
+          const matchedByPrevious = !matchedByCurrent
+            ? existingPolicies.find(p => p.oibId && previousVersionIds.includes(p.oibId))
+            : null;
 
+          if (matchedByCurrent) {
+            comparison.byOS[osType].current.push({
+              ...availablePolicy,
+              existingPolicy: matchedByCurrent,
+              status: 'current',
+              matchMethod: 'oibid'
+            });
+            return;
+          } else if (matchedByPrevious) {
+            comparison.byOS[osType].outdated.push({
+              ...availablePolicy,
+              existingPolicy: matchedByPrevious,
+              status: 'outdated',
+              availableVersion: extractVersion(policyName),
+              existingVersion: extractVersion(matchedByPrevious.displayName || ''),
+              matchMethod: 'oibid'
+            });
+            return;
+          }
+          // No OIBID match found — fall through to name-based matching below.
+          // The tenant policy may exist but simply not have the OIBID in its description.
+        }
+
+        // --- Pass 2: Name-based fallback (pre-3.8 branches without PolicyManifest) ---
         const availableVersion = extractVersion(policyName);
         const availableBaseName = extractBaseName(policyName);
 
-        // Find matching existing policy
         const existingPolicy = existingPolicies.find(existing => {
           const existingBaseName = extractBaseName(existing.displayName || existing.name || '');
           return existingBaseName.toLowerCase() === availableBaseName.toLowerCase();
@@ -80,37 +126,23 @@ const ComparisonDashboard = ({
 
         if (existingPolicy) {
           const existingVersion = extractVersion(existingPolicy.displayName || existingPolicy.name || '');
-          
+
           if (!availableVersion || !existingVersion) {
-            // Can't compare versions, assume current
             comparison.byOS[osType].current.push({
               ...availablePolicy,
               existingPolicy,
-              status: 'current'
+              status: 'current',
+              matchMethod: 'name'
             });
           } else {
-            // Compare versions
-            const compareVersions = (v1, v2) => {
-              const parts1 = v1.split('.').map(Number);
-              const parts2 = v2.split('.').map(Number);
-              
-              for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-                const part1 = parts1[i] || 0;
-                const part2 = parts2[i] || 0;
-                
-                if (part1 > part2) return 1;
-                if (part1 < part2) return -1;
-              }
-              return 0;
-            };
-
             const versionComparison = compareVersions(availableVersion, existingVersion);
-            
+
             if (versionComparison === 0) {
               comparison.byOS[osType].current.push({
                 ...availablePolicy,
                 existingPolicy,
-                status: 'current'
+                status: 'current',
+                matchMethod: 'name'
               });
             } else if (versionComparison > 0) {
               comparison.byOS[osType].outdated.push({
@@ -118,7 +150,8 @@ const ComparisonDashboard = ({
                 existingPolicy,
                 status: 'outdated',
                 availableVersion,
-                existingVersion
+                existingVersion,
+                matchMethod: 'name'
               });
             } else {
               comparison.byOS[osType].newer.push({
@@ -126,14 +159,16 @@ const ComparisonDashboard = ({
                 existingPolicy,
                 status: 'newer',
                 availableVersion,
-                existingVersion
+                existingVersion,
+                matchMethod: 'name'
               });
             }
           }
         } else {
           comparison.byOS[osType].missing.push({
             ...availablePolicy,
-            status: 'missing'
+            status: 'missing',
+            matchMethod: 'name'
           });
         }
       });
@@ -259,7 +294,7 @@ const ComparisonDashboard = ({
       <div className="wizard-container">
         <div className="loading-state">
           <RefreshCw className="spinner" size={32} />
-          <p>Analyzing your tenant policies...</p>
+          <p>{isLoading ? 'Fetching Policies...' : 'Analysing your tenant policies...'}</p>
         </div>
       </div>
     );
@@ -441,7 +476,15 @@ const ComparisonDashboard = ({
                 {osPolicies.map((policy, index) => (
                   <div key={`${policy.name}-${osType}-${index}`} className={`policy-comparison-item ${policy.status}`}>
                     <div className="policy-info">
-                      <div className="policy-name">{policy.name.replace('.json', '')}</div>
+                      <div className="policy-name">
+                        {policy.name.replace('.json', '')}
+                        {policy.skuRequirements === 'Enterprise' && (
+                          <span className="req-tag req-tag--enterprise" title="Requires Windows Enterprise SKU">Enterprise</span>
+                        )}
+                        {policy.licenseRequirements === 'MDE' && (
+                          <span className="req-tag req-tag--mde" title="Requires Microsoft Defender for Endpoint licence">MDE</span>
+                        )}
+                      </div>
                       {policy.existingPolicy && (
                         <div className="matched-policy-name">
                           <span className="matched-label">Matched Policy:</span>
@@ -459,6 +502,14 @@ const ComparisonDashboard = ({
                         {policy.status === 'newer' && (
                           <span className="status-badge newer">
                             Newer than latest: v{policy.existingVersion} {'>'} v{policy.availableVersion}
+                          </span>
+                        )}
+                        {policy.matchMethod && (
+                          <span
+                            className={`match-badge match-badge--${policy.matchMethod}`}
+                            title={policy.matchMethod === 'oibid' ? 'Matched by unique OIBID' : 'Matched by policy name (no OIBID available)'}
+                          >
+                            {policy.matchMethod === 'oibid' ? 'OIBID' : 'Name'}
                           </span>
                         )}
                       </div>

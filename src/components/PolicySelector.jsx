@@ -678,7 +678,7 @@ const PolicySelector = ({ existingPolicies, onPolicySelection, onDeploy, isLoadi
             </p>
           </div>
           <button
-            onClick={onDeploy}
+            onClick={() => onDeploy(selectedPolicies)}
             disabled={isLoading || selectedPolicies.length === 0}
             className="btn btn-primary btn-large"
           >

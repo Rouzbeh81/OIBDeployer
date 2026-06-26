@@ -28,7 +28,17 @@ class AuthService {
             this.isInitialized = true;
             
             // Handle redirect response
-            const response = await this.msalInstance.handleRedirectPromise();
+            // In MSAL v5, handleRedirectPromise throws no_token_request_cache_error
+            // on normal page loads (no redirect in progress) — treat this as null response.
+            let response = null;
+            try {
+                response = await this.msalInstance.handleRedirectPromise();
+            } catch (redirectError) {
+                if (redirectError?.errorCode !== 'no_token_request_cache_error') {
+                    throw redirectError;
+                }
+            }
+
             if (response && response.account) {
                 this.account = response.account;
                 console.log('Authentication successful after redirect');

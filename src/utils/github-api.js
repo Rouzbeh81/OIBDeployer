@@ -240,8 +240,8 @@ class GitHubAPI {
         if (pathLower.includes('powershellscripts')) return 'PowerShellScripts';
         
         // Handle Update policies (WUfB and WUfB Drivers)
+        if (pathLower.includes('driverupdateprofiles')) return 'DriverUpdateProfiles';
         if (pathLower.includes('updatepolicies')) return 'UpdatePolicies';
-        if (pathLower.includes('driverupdateprofiles')) return 'UpdatePolicies';
         
         // Check for Health Monitoring/Endpoint Analytics (Telemetry Policies)
         if (pathLower.includes('health') || pathLower.includes('analytics') || pathLower.includes('telemetry')) return 'TelemetryPolicies';
@@ -255,7 +255,11 @@ class GitHubAPI {
     // Get policies for a specific OS and version - Enhanced with policy content loading
     async getPoliciesForOS(osType, version = 'main') {
         try {
-            const structure = await this.getRepositoryStructure(version);
+            // Fetch manifest and repository structure in parallel
+            const [structure, manifestData] = await Promise.all([
+                this.getRepositoryStructure(version),
+                this.getPolicyManifest(osType, version)
+            ]);
             const osStructure = structure[osType.toUpperCase()];
             
             if (!osStructure) {
@@ -277,10 +281,9 @@ class GitHubAPI {
                 dirFiles.forEach(file => {
                     const fullPath = `${directory.path}/${file.fileName}`;
                     
-                    // Filter out specific problematic policies
-                    if (file.fileName === 'Win - OIB - TP - Health Monitoring - D - Endpoint Analytics - v3.4.json') {
-                        console.info(`Filtering out unsupported policy: ${file.fileName}`);
-                        return; // Skip this policy
+                    // Filter out manifest metadata file
+                    if (file.fileName === 'PolicyManifest.json') {
+                        return;
                     }
                     
                     if (!processedPaths.has(fullPath)) {
@@ -298,10 +301,9 @@ class GitHubAPI {
             
             // Process individual files (only if not already processed from directories)
             osStructure.files.forEach(file => {
-                // Filter out specific problematic policies
-                if (file.name === 'Win - OIB - TP - Health Monitoring - D - Endpoint Analytics - v3.4.json') {
-                    console.info(`Filtering out unsupported policy: ${file.name}`);
-                    return; // Skip this policy
+                // Filter out manifest metadata file
+                if (file.name === 'PolicyManifest.json') {
+                    return;
                 }
                 
                 if (!processedPaths.has(file.path)) {
@@ -323,6 +325,49 @@ class GitHubAPI {
                 }
             });
             
+            // Enrich policies with manifest metadata (oibId, previousVersions, scope, etc.)
+            // Enrich with manifest metadata; the manifest policyType is authoritative
+            // for categorisation, so also re-bucket policies that the path heuristic
+            // placed under the wrong key (e.g. TelemetryPolicies → DeviceConfiguration).
+            if (manifestData) {
+                const rebucket = {}; // newType → [policy]
+
+                Object.entries(policiesByType).forEach(([currentType, policies]) => {
+                    policies.forEach(policy => {
+                        const entry = manifestData.byName.get(policy.name);
+                        if (entry) {
+                            policy.oibId = entry.oibId.toUpperCase();
+                            policy.previousVersions = (entry.previousVersions || []).map(id => id.toUpperCase());
+                            policy.scope = entry.scope || null;
+                            policy.addedIn = entry.addedIn || null;
+                            policy.skuRequirements = entry.skuRequirements || null;
+                            policy.licenseRequirements = entry.licenseRequirements || null;
+
+                            // Override policyType when the manifest disagrees with the path heuristic
+                            if (entry.policyType && entry.policyType !== currentType) {
+                                policy.policyType = entry.policyType;
+                                if (!rebucket[entry.policyType]) rebucket[entry.policyType] = [];
+                                rebucket[entry.policyType].push({ policy, fromType: currentType });
+                            }
+                        }
+                    });
+                });
+
+                // Move re-bucketed policies to their correct type keys
+                Object.entries(rebucket).forEach(([newType, items]) => {
+                    if (!policiesByType[newType]) policiesByType[newType] = [];
+                    items.forEach(({ policy, fromType }) => {
+                        policiesByType[fromType] = policiesByType[fromType].filter(p => p !== policy);
+                        policiesByType[newType].push(policy);
+                    });
+                });
+
+                // Remove any type buckets that are now empty
+                Object.keys(policiesByType).forEach(k => {
+                    if (policiesByType[k].length === 0) delete policiesByType[k];
+                });
+            }
+
             // Log the results for debugging
             const totalPolicies = Object.values(policiesByType).reduce((sum, policies) => sum + policies.length, 0);
             console.log(`Loaded ${totalPolicies} policies for ${osType} ${version}:`, 
@@ -332,6 +377,51 @@ class GitHubAPI {
         } catch (error) {
             console.error(`Failed to get policies for ${osType}:`, error);
             throw new Error(`Failed to load policies for ${osType}`);
+        }
+    }
+
+    // Fetch and cache the PolicyManifest.json for an OS/version (introduced in v3.8)
+    // Returns { manifest, byOibId: Map, byName: Map } or null for pre-3.8 branches
+    async getPolicyManifest(osType, version = 'main') {
+        const cacheKey = `manifest_${osType.toUpperCase()}_${version}`;
+
+        if (this.config.cacheEnabled) {
+            const cached = this.policyContentCache.get(cacheKey);
+            if (cached && this.isCacheValid(cached)) {
+                return cached.data;
+            }
+        }
+
+        const url = `https://raw.githubusercontent.com/${this.config.owner}/${this.config.repo}/${version}/${osType.toUpperCase()}/PolicyManifest.json`;
+
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                console.log(`No PolicyManifest found for ${osType} ${version} (pre-3.8 branch)`);
+                return null;
+            }
+
+            const manifest = await response.json();
+
+            // Build lookup Maps for O(1) access
+            const byOibId = new Map();
+            const byName = new Map();
+            (manifest.policies || []).forEach(entry => {
+                byOibId.set(entry.oibId.toUpperCase(), entry);
+                byName.set(entry.name, entry);
+            });
+
+            const result = { manifest, byOibId, byName };
+
+            if (this.config.cacheEnabled) {
+                this.policyContentCache.set(cacheKey, { data: result, timestamp: Date.now() });
+            }
+
+            console.log(`Loaded PolicyManifest for ${osType} ${version}: ${manifest.policies?.length || 0} entries`);
+            return result;
+        } catch (error) {
+            console.warn(`Failed to load PolicyManifest for ${osType} ${version}:`, error);
+            return null;
         }
     }
 
